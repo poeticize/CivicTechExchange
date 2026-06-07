@@ -2,96 +2,73 @@ from collections import Counter
 from common.caching.cache import Cache
 from common.helpers.dictionaries import merge_dicts
 
-class ProjectCacheManager:
-    _cache_key_prefix = 'project_'
 
-    def get(self, project):
-        return Cache.get(self._get_key(project))
+class BaseCacheManager:
+    """Shared logic for simple model-keyed cache managers.
 
-    def refresh(self, project, value):
-        print('Re-caching project ' + str(project))
-        Cache.refresh(self._get_key(project), value)
+    Subclasses pass a zero-arg ``model_loader`` callable that returns the Django
+    model class. The import is deferred to first use of ``_get_key`` so this
+    module can be imported before Django's app registry is fully populated.
+    """
+
+    def __init__(self, model_loader, key_prefix):
+        self._model_loader = model_loader
+        self._key_prefix = key_prefix
+        self._model_class = None  # resolved lazily on first _get_key call
+
+    def get(self, obj):
+        return Cache.get(self._get_key(obj))
+
+    def refresh(self, obj, value):
+        Cache.refresh(self._get_key(obj), value)
         return value
 
-    def _get_key(self, project):
-        from civictechprojects.models import Project
-        project_id = str(project.id) if isinstance(project, Project) else project
-        return self._cache_key_prefix + project_id
+    def _get_key(self, obj):
+        if self._model_class is None:
+            self._model_class = self._model_loader()
+        obj_id = str(obj.id) if isinstance(obj, self._model_class) else str(obj)
+        return self._key_prefix + obj_id
 
 
-ProjectCache = ProjectCacheManager()
+class ProjectCacheManager(BaseCacheManager):
+    def __init__(self):
+        def _load():
+            from civictechprojects.models import Project
+            return Project
+        super().__init__(_load, 'project_')
 
 
-class EventCacheManager:
-    _cache_key_prefix = 'event_'
-
-    def get(self, project):
-        return Cache.get(self._get_key(project))
-
-    def refresh(self, event, value):
-        print('Re-caching event ' + str(event))
-        Cache.refresh(self._get_key(event), value)
-        return value
-
-    def _get_key(self, event):
-        from civictechprojects.models import Event
-        event_id = str(event.id) if isinstance(event, Event) else event
-        return self._cache_key_prefix + event_id
+class EventCacheManager(BaseCacheManager):
+    def __init__(self):
+        def _load():
+            from civictechprojects.models import Event
+            return Event
+        super().__init__(_load, 'event_')
 
 
-EventCache = EventCacheManager()
+class EventProjectCacheManager(BaseCacheManager):
+    def __init__(self):
+        def _load():
+            from civictechprojects.models import EventProject
+            return EventProject
+        super().__init__(_load, 'eventproject_')
 
 
-class EventProjectCacheManager:
-    _cache_key_prefix = 'eventproject_'
-
-    def get(self, event_project):
-        return Cache.get(self._get_key(event_project))
-
-    def refresh(self, event_project, value):
-        print('Re-caching event project' + str(event_project))
-        Cache.refresh(self._get_key(event_project), value)
-        return value
-
-    def _get_key(self, event_project):
-        from civictechprojects.models import EventProject
-        event_id = str(event_project.id) if isinstance(event_project, EventProject) else event_project
-        return self._cache_key_prefix + event_id
+class GroupCacheManager(BaseCacheManager):
+    def __init__(self):
+        def _load():
+            from civictechprojects.models import Group
+            return Group
+        super().__init__(_load, 'group_')
 
 
-EventProjectCache = EventProjectCacheManager()
-
-
-class GroupCacheManager:
-    _cache_key_prefix = 'group_'
-
-    def get(self, group):
-        return Cache.get(self._get_key(group))
-
-    def refresh(self, group, value):
-        print('Re-caching group ' + str(group))
-        Cache.refresh(self._get_key(group), value)
-        return value
-
-    def _get_key(self, group):
-        from civictechprojects.models import Group
-        event_id = str(group.id) if isinstance(group, Group) else group
-        return self._cache_key_prefix + event_id
-
-
-GroupCache = GroupCacheManager()
-
-
-# Caches the tag counts for project searches
 class ProjectSearchTagsCacheManager:
     _cache_key_prefix = 'project_search_tags_'
 
-    # Retrieve cached project tag counts for event, group, or all projects if both arguments=None
     def get(self, event=None, group=None):
         key = self._get_key(event=event, group=group)
         return Cache.get(key) or self.refresh(event=event, group=group)
 
-    # Re-cache project tag counts for event, group, or all projects if both arguments=None
     def refresh(self, event=None, group=None):
         log_line = 'Re-caching tag counts'
         if event is not None:
@@ -116,8 +93,7 @@ class ProjectSearchTagsCacheManager:
 
     @staticmethod
     def _projects_tag_counts(event=None, group=None):
-        from civictechprojects.models import Project, ProjectPosition
-        projects = None
+        from civictechprojects.models import Project
         if event is not None:
             projects = event.get_linked_projects()
         elif group is not None:
@@ -132,16 +108,12 @@ class ProjectSearchTagsCacheManager:
                 stage += project.project_stage.slugs()
                 organization += project.project_organization.slugs()
                 organization_type += project.project_organization_type.slugs()
-
-                project_positions = project.get_project_positions()
-                # exclude roles which are hidden
-                project_positions = project.get_project_positions().filter(is_hidden=False)                
+                project_positions = project.get_project_positions().filter(is_hidden=False)
                 positions += map(lambda position: position.position_role.slugs()[0], project_positions)
-
-            return merge_dicts(Counter(issues), Counter(technologies), Counter(stage), Counter(organization), Counter(organization_type), Counter(positions))
-
-
-ProjectSearchTagsCache = ProjectSearchTagsCacheManager()
+        return merge_dicts(
+            Counter(issues), Counter(technologies), Counter(stage),
+            Counter(organization), Counter(organization_type), Counter(positions)
+        )
 
 
 class UserContextCacheManager:
@@ -163,4 +135,9 @@ class UserContextCacheManager:
         return self._cache_key_prefix + str(user.id)
 
 
+ProjectCache = ProjectCacheManager()
+EventCache = EventCacheManager()
+EventProjectCache = EventProjectCacheManager()
+GroupCache = GroupCacheManager()
+ProjectSearchTagsCache = ProjectSearchTagsCacheManager()
 UserContextCache = UserContextCacheManager()
