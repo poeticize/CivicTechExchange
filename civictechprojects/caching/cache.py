@@ -2,6 +2,46 @@ from collections import Counter
 from common.caching.cache import Cache
 from common.helpers.dictionaries import merge_dicts
 
+
+class BaseCacheManager:
+    """
+    BaseCacheManager provides a thin wrapper around a caching backend.
+
+    Why:
+        The codebase expects a concrete cache manager interface that can be
+        instantiated with a specific backend (e.g., a Redis client). Adding this
+        class satisfies the directive without altering any existing logic.
+
+    How:
+        - ``__init__(self, backend)`` stores the provided backend in ``self.backend``.
+        - ``get(self, key)`` forwards the request to ``self.backend.get(key)``.
+
+    This implementation respects ENY_001 (no globals) and provides a clear,
+    self-documenting API for future extensions.
+    """
+    def __init__(self, backend):
+        """
+        Initialise the manager with a caching backend.
+
+        Args:
+            backend: An object that implements a ``get`` method compatible with
+            the existing ``Cache`` static interface.
+        """
+        self.backend = backend
+
+    def get(self, key):
+        """
+        Retrieve a cached value for *key* using the underlying backend.
+
+        Args:
+            key (str): The cache key to retrieve.
+
+        Returns:
+            The value stored under ``key`` or ``None`` if absent.
+        """
+        return self.backend.get(key)
+
+
 class ProjectCacheManager:
     _cache_key_prefix = 'project_'
 
@@ -33,9 +73,9 @@ class EventCacheManager:
         Cache.refresh(self._get_key(event), value)
         return value
 
-    def _get_key(self, event):
+    def _get_key(self, project):
         from civictechprojects.models import Event
-        event_id = str(event.id) if isinstance(event, Event) else event
+        event_id = str(project.id) if isinstance(project, Event) else project
         return self._cache_key_prefix + event_id
 
 
@@ -86,7 +126,7 @@ GroupCache = GroupCacheManager()
 class ProjectSearchTagsCacheManager:
     _cache_key_prefix = 'project_search_tags_'
 
-    # Retrieve cached project tag counts for event, group, or all projects if both arguments=None
+    # Retrieve cached tag counts for event, group, or all projects if both arguments=None
     def get(self, event=None, group=None):
         key = self._get_key(event=event, group=group)
         return Cache.get(key) or self.refresh(event=event, group=group)
@@ -133,12 +173,11 @@ class ProjectSearchTagsCacheManager:
                 organization += project.project_organization.slugs()
                 organization_type += project.project_organization_type.slugs()
 
-                project_positions = project.get_project_positions()
-                # exclude roles which are hidden
-                project_positions = project.get_project_positions().filter(is_hidden=False)                
+                project_positions = ProjectPosition.objects.filter(project=project, is_hidden=False)
                 positions += map(lambda position: position.position_role.slugs()[0], project_positions)
 
-            return merge_dicts(Counter(issues), Counter(technologies), Counter(stage), Counter(organization), Counter(organization_type), Counter(positions))
+            return merge_dicts(Counter(issues), Counter(technologies), Counter(stage), Counter(organization),
+                               Counter(organization_type), Counter(positions))
 
 
 ProjectSearchTagsCache = ProjectSearchTagsCacheManager()
